@@ -39,6 +39,7 @@ public final class CameraManager {
     public static int FRAME_WIDTH = -1;
     public static int FRAME_HEIGHT = -1;
     public static int FRAME_MARGINTOP = -1;
+    int resultOrientation;
 
     private static CameraManager cameraManager;
 
@@ -121,6 +122,7 @@ public final class CameraManager {
             if (camera == null) {
                 throw new IOException();
             }
+            setCameraDisplayOrientation(context, Camera.CameraInfo.CAMERA_FACING_BACK, camera);
             camera.setPreviewDisplay(holder);
 
             if (!initialized) {
@@ -137,6 +139,28 @@ public final class CameraManager {
 //      }
             FlashlightManager.enableFlashlight();
         }
+    }
+
+    public static void setCameraDisplayOrientation(Context context,int cameraId, android.hardware.Camera camera) {
+        android.hardware.Camera.CameraInfo info = new android.hardware.Camera.CameraInfo();
+        android.hardware.Camera.getCameraInfo(cameraId, info);
+        Display display = ((WindowManager)context.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay();
+        int degrees = 0;
+        switch (display.getRotation()) {
+            case Surface.ROTATION_0: degrees = 0; break;
+            case Surface.ROTATION_90: degrees = 90; break;
+            case Surface.ROTATION_180: degrees = 180; break;
+            case Surface.ROTATION_270: degrees = 270; break;
+        }
+
+
+        if (info.facing == Camera.CameraInfo.CAMERA_FACING_FRONT) {
+            resultOrientation = (info.orientation + degrees) % 360;
+            resultOrientation = (360 - resultOrientation) % 360;  // compensate the mirror
+        } else {  // back-facing
+            resultOrientation = (info.orientation - degrees + 360) % 360;
+        }
+        camera.setDisplayOrientation(resultOrientation);
     }
 
     /**
@@ -245,22 +269,35 @@ public final class CameraManager {
      * not UI / screen.
      */
     public Rect getFramingRectInPreview() {
-        if (framingRectInPreview == null) {
-            Rect rect = new Rect(getFramingRect());
-            Point cameraResolution = configManager.getCameraResolution();
-            Point screenResolution = configManager.getScreenResolution();
-            //modify here
-//      rect.left = rect.left * cameraResolution.x / screenResolution.x;
-//      rect.right = rect.right * cameraResolution.x / screenResolution.x;
-//      rect.top = rect.top * cameraResolution.y / screenResolution.y;
-//      rect.bottom = rect.bottom * cameraResolution.y / screenResolution.y;
+
+        if(resultOrientation == 180 || resultOrientation == 0){//to work with landScape and reverse landScape
+            rect.left = rect.left * cameraResolution.x / screenResolution.x;
+            rect.right = rect.right * cameraResolution.x / screenResolution.x;
+            rect.top = rect.top * cameraResolution.y / screenResolution.y;
+            rect.bottom = rect.bottom * cameraResolution.y / screenResolution.y;
+        }else{
             rect.left = rect.left * cameraResolution.y / screenResolution.x;
             rect.right = rect.right * cameraResolution.y / screenResolution.x;
             rect.top = rect.top * cameraResolution.x / screenResolution.y;
             rect.bottom = rect.bottom * cameraResolution.x / screenResolution.y;
-            framingRectInPreview = rect;
         }
-        return framingRectInPreview;
+
+        //if (framingRectInPreview == null) {
+        //    Rect rect = new Rect(getFramingRect());
+        //    Point cameraResolution = configManager.getCameraResolution();
+        //    Point screenResolution = configManager.getScreenResolution();
+        //    //modify here
+      //rect.left = rect.left * cameraResolution.x / screenResolution.x;
+      //rect.right = rect.right * cameraResolution.x / screenResolution.x;
+      //rect.top = rect.top * cameraResolution.y / screenResolution.y;
+      //rect.bottom = rect.bottom * cameraResolution.y / screenResolution.y;
+        //    rect.left = rect.left * cameraResolution.y / screenResolution.x;
+        //    rect.right = rect.right * cameraResolution.y / screenResolution.x;
+        //    rect.top = rect.top * cameraResolution.x / screenResolution.y;
+        //    rect.bottom = rect.bottom * cameraResolution.x / screenResolution.y;
+        //    framingRectInPreview = rect;
+        //}
+        //return framingRectInPreview;
     }
 
     /**
@@ -294,28 +331,43 @@ public final class CameraManager {
      * @return A PlanarYUVLuminanceSource instance.
      */
     public PlanarYUVLuminanceSource buildLuminanceSource(byte[] data, int width, int height) {
-        Rect rect = getFramingRectInPreview();
-        int previewFormat = configManager.getPreviewFormat();
-        String previewFormatString = configManager.getPreviewFormatString();
-        switch (previewFormat) {
-            // This is the standard Android format which all devices are REQUIRED to support.
-            // In theory, it's the only one we should ever care about.
-            case PixelFormat.YCbCr_420_SP:
-                // This format has never been seen in the wild, but is compatible as we only care
-                // about the Y channel, so allow it.
-            case PixelFormat.YCbCr_422_SP:
-                return new PlanarYUVLuminanceSource(data, width, height, rect.left, rect.top,
-                        rect.width(), rect.height());
-            default:
-                // The Samsung Moment incorrectly uses this variant instead of the 'sp' version.
-                // Fortunately, it too has all the Y data up front, so we can read it.
-                if ("yuv420p".equals(previewFormatString)) {
-                    return new PlanarYUVLuminanceSource(data, width, height, rect.left, rect.top,
-                            rect.width(), rect.height());
-                }
+        if(resultOrientation == 180 || resultOrientation == 0){//TODO: This is to use camera in landScape mode
+            // Go ahead and assume it's YUV rather than die.
+            return new PlanarYUVLuminanceSource(data, width, height, rect.left, rect.top, rect.width(), rect.height(), false);
+        }else{
+            byte[] rotatedData = new byte[data.length];
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++)
+                    rotatedData[x * height + height - y - 1] = data[x + y * width];
+            }
+            int tmp = width;
+            width = height;
+            height = tmp;
+            return new PlanarYUVLuminanceSource(rotatedData, width, height, rect.left, rect.top, rect.width(), rect.height(), false);
         }
-        throw new IllegalArgumentException("Unsupported picture format: " +
-                previewFormat + '/' + previewFormatString);
+
+        //Rect rect = getFramingRectInPreview();
+        //int previewFormat = configManager.getPreviewFormat();
+        //String previewFormatString = configManager.getPreviewFormatString();
+        //switch (previewFormat) {
+        //    // This is the standard Android format which all devices are REQUIRED to support.
+        //    // In theory, it's the only one we should ever care about.
+        //    case PixelFormat.YCbCr_420_SP:
+        //        // This format has never been seen in the wild, but is compatible as we only care
+        //        // about the Y channel, so allow it.
+        //    case PixelFormat.YCbCr_422_SP:
+        //        return new PlanarYUVLuminanceSource(data, width, height, rect.left, rect.top,
+        //                rect.width(), rect.height());
+        //    default:
+        //        // The Samsung Moment incorrectly uses this variant instead of the 'sp' version.
+        //        // Fortunately, it too has all the Y data up front, so we can read it.
+        //        if ("yuv420p".equals(previewFormatString)) {
+        //            return new PlanarYUVLuminanceSource(data, width, height, rect.left, rect.top,
+        //                    rect.width(), rect.height());
+        //        }
+        //}
+        //throw new IllegalArgumentException("Unsupported picture format: " +
+        //        previewFormat + '/' + previewFormatString);
     }
 
     public Context getContext() {
